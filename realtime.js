@@ -31,9 +31,17 @@ async function startRealtimeSession(apiKey, micConstraints) {
     dc.send(JSON.stringify({
       type: "session.update",
       session: {
-        instructions: "You are a friendly assistant. Respond briefly in the same language the user speaks. Keep responses short (1-2 sentences).",
+        instructions: "You are a friendly assistant. Respond in the same language the user speaks. Keep responses short (1-2 sentences).",
         voice: "alloy",
         input_audio_transcription: { model: "gpt-4o-mini-transcription" },
+      },
+    }));
+    // Immediately trigger a greeting so we can observe AEC behavior from the start
+    dc.send(JSON.stringify({
+      type: "response.create",
+      response: {
+        modalities: ["audio", "text"],
+        instructions: "Greet the user warmly in Japanese. Say something like 'こんにちは！何かお手伝いできることはありますか？' Keep it to 1-2 sentences.",
       },
     }));
   };

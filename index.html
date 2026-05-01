@@ -93,6 +93,15 @@
         </div>
         <canvas id="spectrum"></canvas>
       </div>
+      <div class="viz-block">
+        <div class="viz-header">
+          <span class="viz-title">Coherence <span class="viz-sub">|S<sub>xy</sub>|<sup>2</sup> / (S<sub>xx</sub> · S<sub>yy</sub>)</span>
+            <span class="tooltip-wrap">?<span class="tooltip">再生信号（参照）とマイク入力の周波数ごとの相関を示します。値が 1 に近い帯域ではエコーがそのまま漏れており、0 に近い帯域では AEC が抑圧に成功しています。テスト音源を再生しながらマイクを開始すると計測できます。</span></span>
+          </span>
+          <span class="viz-meter" id="coherence-avg">-- </span>
+        </div>
+        <canvas id="coherence"></canvas>
+      </div>
     </section>
   </main>
 

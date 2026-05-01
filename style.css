@@ -353,6 +353,53 @@ main {
   color: var(--cyan);
 }
 
+.viz-sub {
+  font-size: 0.6rem;
+  font-weight: 400;
+  color: #475569;
+  margin-left: 4px;
+}
+
+.tooltip-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 1px solid var(--text-dim);
+  font-size: 0.55rem;
+  color: var(--text-dim);
+  cursor: help;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
+.tooltip {
+  display: none;
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 260px;
+  padding: 8px 10px;
+  background: #1e293b;
+  color: #e2e8f0;
+  font-size: 0.7rem;
+  font-weight: 400;
+  line-height: 1.5;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  z-index: 10;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.tooltip-wrap:hover .tooltip {
+  display: block;
+}
+
 canvas {
   flex: 1;
   width: 100%;

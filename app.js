@@ -2,6 +2,7 @@
 let audioCtx = null;
 let playbackSource = null;
 let gainNode = null;
+let refAnalyser = null; // analyser on playback signal (reference)
 let micStream = null;
 let micSource = null;
 let analyser = null;
@@ -9,6 +10,13 @@ let mediaRecorder = null;
 let recordedChunks = [];
 let animationId = null;
 let rtActive = false;
+
+// Coherence estimation state (exponential moving average of cross/auto spectra)
+const COHERENCE_ALPHA = 0.1; // smoothing factor
+let sxx = null; // auto-spectrum of reference
+let syy = null; // auto-spectrum of mic
+let sxyRe = null; // cross-spectrum real part
+let sxyIm = null; // cross-spectrum imaginary part
 
 // ---- DOM ----
 const btnPlay = document.getElementById("btn-play");
@@ -25,11 +33,13 @@ const volumeSlider = document.getElementById("volume");
 const volumeValue = document.getElementById("volume-value");
 const waveformCanvas = document.getElementById("waveform");
 const spectrumCanvas = document.getElementById("spectrum");
+const coherenceCanvas = document.getElementById("coherence");
 const envInfo = document.getElementById("env-info");
 const trackSettings = document.getElementById("track-settings");
 const recordingsDiv = document.getElementById("recordings");
 const statusBadge = document.getElementById("status-badge");
 const rmsDisplay = document.getElementById("rms-display");
+const coherenceAvg = document.getElementById("coherence-avg");
 
 // ---- Status ----
 function setStatus(text, cls) {
@@ -57,6 +67,11 @@ function ensureAudioCtx() {
     gainNode = audioCtx.createGain();
     gainNode.gain.value = parseFloat(volumeSlider.value);
     gainNode.connect(audioCtx.destination);
+
+    // Reference analyser sits between gain and destination
+    refAnalyser = audioCtx.createAnalyser();
+    refAnalyser.fftSize = 2048;
+    gainNode.connect(refAnalyser);
   }
   if (audioCtx.state === "suspended") {
     audioCtx.resume();
@@ -172,6 +187,9 @@ async function startMic() {
   analyser.fftSize = 2048;
   micSource.connect(analyser);
 
+  // Reset coherence accumulators
+  resetCoherence();
+
   const audioTrack = micStream.getAudioTracks()[0];
   const settings = audioTrack.getSettings();
   const capabilities = audioTrack.getCapabilities ? audioTrack.getCapabilities() : "N/A";
@@ -193,6 +211,7 @@ function stopMic() {
   analyser = null;
   trackSettings.textContent = "Mic not started";
   rmsDisplay.textContent = "-- dB";
+  coherenceAvg.textContent = "--";
 
   btnMic.disabled = false;
   btnMicStop.disabled = true;
@@ -332,9 +351,56 @@ function updateControlStates() {
   openaiKeyInput.disabled = rtActive;
 }
 
+// ---- Coherence ----
+function resetCoherence() {
+  const n = 1024; // frequencyBinCount for fftSize=2048
+  sxx = new Float32Array(n);
+  syy = new Float32Array(n);
+  sxyRe = new Float32Array(n);
+  sxyIm = new Float32Array(n);
+}
+
+// Estimate magnitude-squared coherence using exponentially weighted averages.
+// AnalyserNode only gives us magnitude (not phase), so we approximate:
+//   - Sxx and Syy from getFloatFrequencyData (power in dB → linear)
+//   - For Sxy we use the geometric mean approximation:
+//     |Sxy|^2 ≈ Sxx * Syy * coherence
+// Since we can't get true cross-spectrum phase from AnalyserNode,
+// we use a practical proxy: the ratio of the product of magnitudes
+// to the individual powers, smoothed over time.
+// This simplifies to tracking per-bin correlation of magnitude envelopes.
+function computeCoherence(refFreqData, micFreqData) {
+  if (!sxx) resetCoherence();
+  const n = refFreqData.length;
+  const alpha = COHERENCE_ALPHA;
+  const coherence = new Float32Array(n);
+
+  for (let i = 0; i < n; i++) {
+    // Convert dB to linear power
+    const xPow = Math.pow(10, refFreqData[i] / 10);
+    const yPow = Math.pow(10, micFreqData[i] / 10);
+    const xyMag = Math.sqrt(xPow * yPow);
+
+    // Exponential moving average
+    sxx[i] = alpha * xPow + (1 - alpha) * sxx[i];
+    syy[i] = alpha * yPow + (1 - alpha) * syy[i];
+    sxyRe[i] = alpha * xyMag + (1 - alpha) * sxyRe[i];
+
+    // MSC = |Sxy|^2 / (Sxx * Syy)
+    const denom = sxx[i] * syy[i];
+    if (denom > 1e-20) {
+      coherence[i] = (sxyRe[i] * sxyRe[i]) / denom;
+      coherence[i] = Math.min(coherence[i], 1.0);
+    } else {
+      coherence[i] = 0;
+    }
+  }
+  return coherence;
+}
+
 // ---- Canvas Resize ----
 function resizeCanvases() {
-  for (const c of [waveformCanvas, spectrumCanvas]) {
+  for (const c of [waveformCanvas, spectrumCanvas, coherenceCanvas]) {
     const rect = c.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
     c.width = rect.width * dpr;
@@ -350,9 +416,14 @@ function startVisualization() {
 
   const waveCtx = waveformCanvas.getContext("2d");
   const specCtx = spectrumCanvas.getContext("2d");
+  const cohCtx = coherenceCanvas.getContext("2d");
   const bufferLength = analyser.frequencyBinCount;
   const timeData = new Uint8Array(bufferLength);
   const freqData = new Uint8Array(bufferLength);
+
+  // Float frequency data for coherence (dB values)
+  const micFloatFreq = new Float32Array(bufferLength);
+  const refFloatFreq = new Float32Array(bufferLength);
 
   function draw() {
     animationId = requestAnimationFrame(draw);
@@ -367,7 +438,6 @@ function startVisualization() {
     waveCtx.fillStyle = "#1a1d27";
     waveCtx.fillRect(0, 0, wW, wH);
 
-    // Grid lines
     waveCtx.strokeStyle = "#2a2d3a";
     waveCtx.lineWidth = 1;
     waveCtx.beginPath();
@@ -375,7 +445,6 @@ function startVisualization() {
     waveCtx.lineTo(wW, wH / 2);
     waveCtx.stroke();
 
-    // Waveform line
     waveCtx.lineWidth = 1.5 * dpr;
     waveCtx.strokeStyle = "#22d3ee";
     waveCtx.beginPath();
@@ -410,7 +479,6 @@ function startVisualization() {
     for (let i = 0; i < bufferLength; i++) {
       const barHeight = (freqData[i] / 255) * sH;
       const ratio = i / bufferLength;
-      // Gradient: cyan → blue → purple
       const r = Math.floor(30 + ratio * 120);
       const g = Math.floor(200 - ratio * 150);
       const b = Math.floor(230 + ratio * 25);
@@ -418,7 +486,6 @@ function startVisualization() {
       specCtx.fillRect(i * barWidth, sH - barHeight, barWidth + 1, barHeight);
     }
 
-    // Frequency labels
     specCtx.fillStyle = "#64748b";
     specCtx.font = `${11 * dpr}px monospace`;
     if (audioCtx) {
@@ -430,6 +497,86 @@ function startVisualization() {
         const label = f >= 1000 ? f / 1000 + "k" : String(f);
         specCtx.fillText(label, xPos + 2, sH - 6 * dpr);
       }
+    }
+
+    // ---- Coherence ----
+    const cW = coherenceCanvas.width;
+    const cH = coherenceCanvas.height;
+    cohCtx.fillStyle = "#1a1d27";
+    cohCtx.fillRect(0, 0, cW, cH);
+
+    if (refAnalyser && playbackSource) {
+      // Get float frequency data from both analysers
+      analyser.getFloatFrequencyData(micFloatFreq);
+      refAnalyser.getFloatFrequencyData(refFloatFreq);
+
+      const coherence = computeCoherence(refFloatFreq, micFloatFreq);
+
+      // Draw grid lines at 0.25, 0.5, 0.75
+      cohCtx.strokeStyle = "#2a2d3a";
+      cohCtx.lineWidth = 1;
+      for (const level of [0.25, 0.5, 0.75]) {
+        const gy = cH * (1 - level);
+        cohCtx.beginPath();
+        cohCtx.moveTo(0, gy);
+        cohCtx.lineTo(cW, gy);
+        cohCtx.stroke();
+      }
+
+      // Y-axis labels
+      cohCtx.fillStyle = "#475569";
+      cohCtx.font = `${10 * dpr}px monospace`;
+      cohCtx.fillText("1.0", 4, 12 * dpr);
+      cohCtx.fillText("0.5", 4, cH * 0.5 + 4);
+      cohCtx.fillText("0", 4, cH - 4);
+
+      // Draw coherence curve
+      cohCtx.lineWidth = 2 * dpr;
+      cohCtx.strokeStyle = "#f59e0b"; // amber
+      cohCtx.beginPath();
+      const cohBarWidth = cW / coherence.length;
+      for (let i = 0; i < coherence.length; i++) {
+        const cx = i * cohBarWidth;
+        const cy = cH * (1 - coherence[i]);
+        if (i === 0) cohCtx.moveTo(cx, cy);
+        else cohCtx.lineTo(cx, cy);
+      }
+      cohCtx.stroke();
+
+      // Fill under curve with semi-transparent color
+      cohCtx.lineTo(cW, cH);
+      cohCtx.lineTo(0, cH);
+      cohCtx.closePath();
+      cohCtx.fillStyle = "rgba(245, 158, 11, 0.08)";
+      cohCtx.fill();
+
+      // Frequency labels
+      cohCtx.fillStyle = "#64748b";
+      cohCtx.font = `${11 * dpr}px monospace`;
+      if (audioCtx) {
+        const nyquist = audioCtx.sampleRate / 2;
+        const freqs = [100, 500, 1000, 2000, 4000, 8000];
+        for (const f of freqs) {
+          if (f > nyquist) continue;
+          const xPos = (f / nyquist) * cW;
+          const label = f >= 1000 ? f / 1000 + "k" : String(f);
+          cohCtx.fillText(label, xPos + 2, cH - 6 * dpr);
+        }
+      }
+
+      // Average coherence display
+      let sum = 0;
+      for (let i = 0; i < coherence.length; i++) sum += coherence[i];
+      const avg = sum / coherence.length;
+      coherenceAvg.textContent = avg.toFixed(3);
+    } else {
+      // No reference signal
+      cohCtx.fillStyle = "#475569";
+      cohCtx.font = `${12 * dpr}px sans-serif`;
+      cohCtx.textAlign = "center";
+      cohCtx.fillText("Play a test source to see coherence", cW / 2, cH / 2);
+      cohCtx.textAlign = "start";
+      coherenceAvg.textContent = "--";
     }
   }
 

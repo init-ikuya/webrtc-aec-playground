@@ -7,72 +7,96 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <h1>WebRTC AEC Playground</h1>
-  <p class="description">
-    <code>echoCancellation</code> constraint の効果をデバイス・ブラウザ別に検証するツール。<br>
-    スピーカーからテスト音を再生しながらマイク入力の波形を観察し、AEC の収束挙動を確認できます。
-  </p>
+  <header>
+    <h1>WebRTC AEC Playground</h1>
+    <span class="badge" id="status-badge">IDLE</span>
+  </header>
 
-  <section class="controls">
-    <div class="control-group">
-      <h2>1. テスト音源</h2>
-      <div class="radio-group">
-        <label><input type="radio" name="source" value="sweep" checked> スイープ (20Hz–8kHz)</label>
-        <label><input type="radio" name="source" value="whitenoise"> ホワイトノイズ</label>
-        <label><input type="radio" name="source" value="speech"> 音声サンプル (TTS)</label>
+  <main>
+    <!-- Left: Controls -->
+    <aside class="panel">
+      <div class="card">
+        <h2>Source</h2>
+        <div class="radio-group">
+          <label class="chip"><input type="radio" name="source" value="sweep" checked><span>Sweep</span></label>
+          <label class="chip"><input type="radio" name="source" value="whitenoise"><span>Noise</span></label>
+          <label class="chip"><input type="radio" name="source" value="speech"><span>Speech</span></label>
+        </div>
+        <div class="volume-row">
+          <input type="range" id="volume" min="0" max="1" step="0.05" value="0.3">
+          <span id="volume-value">0.30</span>
+        </div>
+        <div class="btn-row">
+          <button id="btn-play" class="btn btn-primary">Play</button>
+          <button id="btn-stop" class="btn" disabled>Stop</button>
+        </div>
       </div>
-      <div class="volume-control">
-        <label>再生音量: <input type="range" id="volume" min="0" max="1" step="0.05" value="0.3"></label>
-        <span id="volume-value">0.3</span>
-      </div>
-      <button id="btn-play" class="btn">再生</button>
-      <button id="btn-stop" class="btn btn-secondary" disabled>停止</button>
-    </div>
 
-    <div class="control-group">
-      <h2>2. マイク設定</h2>
-      <div class="toggle-group">
-        <label>
+      <div class="card">
+        <h2>Constraints</h2>
+        <label class="toggle">
           <input type="checkbox" id="echo-cancellation" checked>
-          echoCancellation
+          <span class="toggle-label">echoCancellation</span>
         </label>
-        <label>
+        <label class="toggle">
           <input type="checkbox" id="noise-suppression" checked>
-          noiseSuppression
+          <span class="toggle-label">noiseSuppression</span>
         </label>
-        <label>
+        <label class="toggle">
           <input type="checkbox" id="auto-gain-control" checked>
-          autoGainControl
+          <span class="toggle-label">autoGainControl</span>
         </label>
+        <div class="btn-row">
+          <button id="btn-mic" class="btn btn-accent">Mic Start</button>
+          <button id="btn-mic-stop" class="btn" disabled>Mic Stop</button>
+        </div>
       </div>
-      <button id="btn-mic" class="btn">マイク開始</button>
-      <button id="btn-mic-stop" class="btn btn-secondary" disabled>マイク停止</button>
-    </div>
 
-    <div class="control-group">
-      <h2>3. 録音</h2>
-      <button id="btn-record" class="btn" disabled>録音開始</button>
-      <button id="btn-record-stop" class="btn btn-secondary" disabled>録音停止</button>
-      <div id="recordings"></div>
-    </div>
-  </section>
+      <div class="card">
+        <h2>Record</h2>
+        <div class="btn-row">
+          <button id="btn-record" class="btn btn-rec" disabled>REC</button>
+          <button id="btn-record-stop" class="btn" disabled>Stop</button>
+        </div>
+        <div id="recordings"></div>
+      </div>
 
-  <section class="visualizer">
-    <h2>波形 (時間領域)</h2>
-    <canvas id="waveform" width="800" height="200"></canvas>
+      <div class="card">
+        <h2>OpenAI Realtime</h2>
+        <input type="password" id="openai-key" class="text-input" placeholder="sk-... (API Key)">
+        <div class="btn-row" style="margin-top:8px">
+          <button id="btn-rt-start" class="btn btn-openai">Connect</button>
+          <button id="btn-rt-stop" class="btn" disabled>Disconnect</button>
+        </div>
+        <div id="rt-status" class="rt-status">Not connected</div>
+      </div>
 
-    <h2>スペクトログラム (周波数領域)</h2>
-    <canvas id="spectrum" width="800" height="200"></canvas>
-  </section>
+      <details class="card card-details">
+        <summary>Environment / Settings</summary>
+        <pre id="env-info"></pre>
+        <pre id="track-settings">Mic not started</pre>
+      </details>
+    </aside>
 
-  <section class="info">
-    <h2>環境情報</h2>
-    <pre id="env-info"></pre>
+    <!-- Right: Visualizers -->
+    <section class="viz">
+      <div class="viz-block">
+        <div class="viz-header">
+          <span class="viz-title">Waveform</span>
+          <span class="viz-meter" id="rms-display">-- dB</span>
+        </div>
+        <canvas id="waveform"></canvas>
+      </div>
+      <div class="viz-block">
+        <div class="viz-header">
+          <span class="viz-title">Spectrum</span>
+        </div>
+        <canvas id="spectrum"></canvas>
+      </div>
+    </section>
+  </main>
 
-    <h2>現在の MediaTrackSettings</h2>
-    <pre id="track-settings">マイク未開始</pre>
-  </section>
-
+  <script src="realtime.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -18,6 +18,15 @@ let syy = null; // auto-spectrum of mic
 let sxyRe = null; // cross-spectrum real part
 let sxyIm = null; // cross-spectrum imaginary part
 
+// Coherence time-series log
+let coherenceLog = []; // { time, avgCoherence, erle }
+let coherenceLogStart = null;
+
+// ERLE state
+let erleMicPowerAcc = 0; // accumulated mic power (AEC output)
+let erleRefPowerAcc = 0; // accumulated reference power
+let erleFrameCount = 0;
+
 // ---- DOM ----
 const btnPlay = document.getElementById("btn-play");
 const btnStop = document.getElementById("btn-stop");
@@ -40,6 +49,9 @@ const recordingsDiv = document.getElementById("recordings");
 const statusBadge = document.getElementById("status-badge");
 const rmsDisplay = document.getElementById("rms-display");
 const coherenceAvg = document.getElementById("coherence-avg");
+const erleDisplay = document.getElementById("erle-display");
+const btnExportLog = document.getElementById("btn-export-log");
+const btnApplyConstraints = document.getElementById("btn-apply-constraints");
 
 // ---- Status ----
 function setStatus(text, cls) {
@@ -187,8 +199,10 @@ async function startMic() {
   analyser.fftSize = 2048;
   micSource.connect(analyser);
 
-  // Reset coherence accumulators
+  // Reset coherence accumulators & logs
   resetCoherence();
+  resetErle();
+  resetCoherenceLog();
 
   const audioTrack = micStream.getAudioTracks()[0];
   const settings = audioTrack.getSettings();
@@ -339,11 +353,13 @@ function updateControlStates() {
     r.disabled = isPlaying;
   });
 
-  // Disable constraints while mic is active or realtime session is active
-  const constraintsLocked = isMicActive || rtActive;
-  document.getElementById("echo-cancellation").disabled = constraintsLocked;
-  document.getElementById("noise-suppression").disabled = constraintsLocked;
-  document.getElementById("auto-gain-control").disabled = constraintsLocked;
+  // Constraints are editable while mic is active (apply via button), locked during realtime
+  document.getElementById("echo-cancellation").disabled = rtActive;
+  document.getElementById("noise-suppression").disabled = rtActive;
+  document.getElementById("auto-gain-control").disabled = rtActive;
+
+  // Show apply button only when mic is active
+  btnApplyConstraints.style.display = isMicActive ? "" : "none";
 
   // Disable realtime connect while mic is active (and vice versa)
   btnRtStart.disabled = rtActive || isMicActive;
@@ -396,6 +412,88 @@ function computeCoherence(refFreqData, micFreqData) {
     }
   }
   return coherence;
+}
+
+// ---- ERLE ----
+function resetErle() {
+  erleMicPowerAcc = 0;
+  erleRefPowerAcc = 0;
+  erleFrameCount = 0;
+}
+
+function updateErle(refFreqData, micFreqData) {
+  let refPower = 0;
+  let micPower = 0;
+  for (let i = 0; i < refFreqData.length; i++) {
+    refPower += Math.pow(10, refFreqData[i] / 10);
+    micPower += Math.pow(10, micFreqData[i] / 10);
+  }
+  erleRefPowerAcc += refPower;
+  erleMicPowerAcc += micPower;
+  erleFrameCount++;
+
+  if (erleRefPowerAcc > 1e-20 && erleMicPowerAcc > 1e-20) {
+    return 10 * Math.log10(erleRefPowerAcc / erleMicPowerAcc);
+  }
+  return null;
+}
+
+// ---- Coherence Log ----
+function resetCoherenceLog() {
+  coherenceLog = [];
+  coherenceLogStart = null;
+}
+
+function logCoherence(avgCoherence, erle) {
+  if (!coherenceLogStart) coherenceLogStart = performance.now();
+  const time = ((performance.now() - coherenceLogStart) / 1000).toFixed(2);
+  coherenceLog.push({ time: parseFloat(time), avgCoherence, erle });
+}
+
+function exportCoherenceLog() {
+  if (coherenceLog.length === 0) {
+    alert("No coherence data to export");
+    return;
+  }
+  const header = "time_sec,avg_coherence,erle_dB\n";
+  const rows = coherenceLog.map(
+    (r) => `${r.time},${r.avgCoherence.toFixed(4)},${r.erle !== null ? r.erle.toFixed(2) : ""}`
+  ).join("\n");
+  const blob = new Blob([header + rows], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  const ecEnabled = document.getElementById("echo-cancellation").checked;
+  a.download = `coherence-log-aec-${ecEnabled ? "on" : "off"}-${Date.now()}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+// ---- Apply Constraints (dynamic toggle) ----
+async function applyConstraintsLive() {
+  if (!micStream) return;
+  const track = micStream.getAudioTracks()[0];
+  if (!track) return;
+
+  const newConstraints = {
+    echoCancellation: document.getElementById("echo-cancellation").checked,
+    noiseSuppression: document.getElementById("noise-suppression").checked,
+    autoGainControl: document.getElementById("auto-gain-control").checked,
+  };
+
+  try {
+    await track.applyConstraints(newConstraints);
+    // Update displayed settings
+    const settings = track.getSettings();
+    const capabilities = track.getCapabilities ? track.getCapabilities() : "N/A";
+    trackSettings.textContent = JSON.stringify({ settings, capabilities }, null, 2);
+    // Reset coherence & ERLE for fresh measurement
+    resetCoherence();
+    resetErle();
+    resetCoherenceLog();
+  } catch (err) {
+    alert("applyConstraints failed: " + err.message);
+  }
 }
 
 // ---- Canvas Resize ----
@@ -564,11 +662,25 @@ function startVisualization() {
         }
       }
 
+      // ERLE calculation
+      const erle = updateErle(refFloatFreq, micFloatFreq);
+      if (erle !== null) {
+        erleDisplay.textContent = `${erle.toFixed(1)} dB`;
+      } else {
+        erleDisplay.textContent = "-- dB";
+      }
+
       // Average coherence display
       let sum = 0;
       for (let i = 0; i < coherence.length; i++) sum += coherence[i];
       const avg = sum / coherence.length;
       coherenceAvg.textContent = avg.toFixed(3);
+
+      // Log coherence time-series (throttle to ~2Hz)
+      if (!this._lastLogTime || performance.now() - this._lastLogTime > 500) {
+        logCoherence(avg, erle);
+        this._lastLogTime = performance.now();
+      }
     } else {
       // No reference signal
       cohCtx.fillStyle = "#475569";
@@ -577,6 +689,7 @@ function startVisualization() {
       cohCtx.fillText("Play a test source to see coherence", cW / 2, cH / 2);
       cohCtx.textAlign = "start";
       coherenceAvg.textContent = "--";
+      erleDisplay.textContent = "-- dB";
     }
   }
 
@@ -599,6 +712,9 @@ btnRecord.addEventListener("click", startRecording);
 btnRecordStop.addEventListener("click", stopRecording);
 btnRtStart.addEventListener("click", startRealtime);
 btnRtStop.addEventListener("click", stopRealtime);
+
+btnApplyConstraints.addEventListener("click", applyConstraintsLive);
+btnExportLog.addEventListener("click", exportCoherenceLog);
 
 volumeSlider.addEventListener("input", () => {
   const v = parseFloat(volumeSlider.value);

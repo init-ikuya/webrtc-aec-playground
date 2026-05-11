@@ -224,6 +224,12 @@ main {
   color: #fff;
 }
 
+.btn-sm {
+  flex: none;
+  padding: 4px 12px;
+  font-size: 0.7rem;
+}
+
 /* ---- Toggle Switches ---- */
 .toggle {
   display: flex;

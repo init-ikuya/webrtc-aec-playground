@@ -50,6 +50,7 @@
           <button id="btn-mic" class="btn btn-accent">Mic Start</button>
           <button id="btn-mic-stop" class="btn" disabled>Mic Stop</button>
         </div>
+        <button id="btn-apply-constraints" class="btn btn-sm" style="display:none;margin-top:4px;width:100%">Apply Constraints</button>
       </div>
 
       <div class="card">
@@ -101,6 +102,20 @@
           <span class="viz-meter" id="coherence-avg">-- </span>
         </div>
         <canvas id="coherence"></canvas>
+      </div>
+      <div class="viz-block">
+        <div class="viz-header">
+          <span class="viz-title">ERLE <span class="viz-sub">Echo Return Loss Enhancement</span>
+            <span class="tooltip-wrap">?<span class="tooltip">参照信号のパワーとマイク入力のパワーの比（dB）。値が大きいほどエコーが抑圧されていることを示します。AEC OFF 時は 0 dB 付近、AEC ON で効いていれば 10〜40 dB 程度になります。</span></span>
+          </span>
+          <span class="viz-meter" id="erle-display">-- dB</span>
+        </div>
+      </div>
+      <div class="viz-block">
+        <div class="viz-header">
+          <span class="viz-title">Data Export</span>
+        </div>
+        <button id="btn-export-log" class="btn btn-sm" style="width:100%">Export Coherence/ERLE Log (CSV)</button>
       </div>
     </section>
   </main>

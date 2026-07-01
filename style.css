@@ -325,17 +325,19 @@ main {
   gap: 0;
   min-width: 0;
   padding: 12px;
+  overflow-y: auto;
 }
 
 .viz-block {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
+  margin-bottom: 12px;
 }
 
-.viz-block:first-child {
-  margin-bottom: 8px;
+.viz-block:last-child {
+  margin-bottom: 0;
+}
+
+.viz-block:not(:has(canvas)) {
+  min-height: auto;
 }
 
 .viz-header {
@@ -407,8 +409,8 @@ main {
 }
 
 canvas {
-  flex: 1;
   width: 100%;
+  height: 120px;
   background: var(--surface);
   border-radius: 8px;
   border: 1px solid var(--border);

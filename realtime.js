@@ -1,12 +1,12 @@
-// ---- OpenAI Realtime API via WebRTC ----
+// ---- OpenAI Realtime API via WebRTC (GA) ----
 // API key is used in-memory only and never persisted to storage.
 
 let rtPeerConnection = null;
 let rtDataChannel = null;
 let rtRemoteAudio = null;
 
-const OPENAI_REALTIME_URL = "https://api.openai.com/v1/realtime";
-const OPENAI_MODEL = "gpt-4o-realtime-preview";
+const OPENAI_REALTIME_URL = "https://api.openai.com/v1/realtime/calls";
+const OPENAI_MODEL = "gpt-realtime-2";
 
 async function startRealtimeSession(apiKey, micConstraints) {
   if (rtPeerConnection) {

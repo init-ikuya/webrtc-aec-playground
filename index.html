@@ -60,6 +60,7 @@
           <button id="btn-record-stop" class="btn" disabled>Stop</button>
         </div>
         <div id="recordings"></div>
+        <button id="btn-export-log" class="btn btn-sm" style="width:100%;margin-top:8px">Export Log (CSV)</button>
       </div>
 
       <div class="card">
@@ -96,6 +97,12 @@
       </div>
       <div class="viz-block">
         <div class="viz-header">
+          <span class="viz-title">Spectrogram <span class="viz-sub">Time × Frequency</span></span>
+        </div>
+        <canvas id="spectrogram"></canvas>
+      </div>
+      <div class="viz-block">
+        <div class="viz-header">
           <span class="viz-title">Coherence <span class="viz-sub">|S<sub>xy</sub>|<sup>2</sup> / (S<sub>xx</sub> · S<sub>yy</sub>)</span>
             <span class="tooltip-wrap">?<span class="tooltip">再生信号（参照）とマイク入力の周波数ごとの相関を示します。値が 1 に近い帯域ではエコーがそのまま漏れており、0 に近い帯域では AEC が抑圧に成功しています。テスト音源を再生しながらマイクを開始すると計測できます。</span></span>
           </span>
@@ -113,9 +120,11 @@
       </div>
       <div class="viz-block">
         <div class="viz-header">
-          <span class="viz-title">Data Export</span>
+          <span class="viz-title">Convergence <span class="viz-sub">ERLE &amp; Coherence over time</span>
+            <span class="tooltip-wrap">?<span class="tooltip">AECの収束過程をリアルタイムで可視化します。オレンジの線が平均コヒーレンス（低いほどエコー除去が効いている）、緑の線がERLE（高いほどエコー除去量が大きい）です。テスト音源を再生しながらマイクを開始すると計測できます。</span></span>
+          </span>
         </div>
-        <button id="btn-export-log" class="btn btn-sm" style="width:100%">Export Coherence/ERLE Log (CSV)</button>
+        <canvas id="convergence"></canvas>
       </div>
     </section>
   </main>

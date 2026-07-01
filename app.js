@@ -50,8 +50,14 @@ const statusBadge = document.getElementById("status-badge");
 const rmsDisplay = document.getElementById("rms-display");
 const coherenceAvg = document.getElementById("coherence-avg");
 const erleDisplay = document.getElementById("erle-display");
+const spectrogramCanvas = document.getElementById("spectrogram");
+const convergenceCanvas = document.getElementById("convergence");
 const btnExportLog = document.getElementById("btn-export-log");
 const btnApplyConstraints = document.getElementById("btn-apply-constraints");
+
+// Spectrogram offscreen buffer
+let spectrogramBuffer = null;
+let spectrogramBufferCtx = null;
 
 // ---- Status ----
 function setStatus(text, cls) {
@@ -305,10 +311,23 @@ async function startRealtime() {
   rtStatusEl.className = "rt-status";
 
   try {
-    await startRealtimeSession(apiKey, micConstraints);
+    const session = await startRealtimeSession(apiKey, micConstraints);
     rtActive = true;
     btnRtStop.disabled = false;
     openaiKeyInput.value = "";
+
+    // Set up visualization for the Realtime mic stream
+    ensureAudioCtx();
+    micStream = session.micStream;
+    micSource = audioCtx.createMediaStreamSource(micStream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 2048;
+    micSource.connect(analyser);
+    resetCoherence();
+    resetErle();
+    resetCoherenceLog();
+    startVisualization();
+
     updateStatus();
   } catch (err) {
     rtStatusEl.textContent = err.message;
@@ -319,12 +338,18 @@ async function startRealtime() {
 }
 
 function stopRealtime() {
+  stopVisualization();
+  if (micSource) { micSource.disconnect(); micSource = null; }
+  analyser = null;
+  micStream = null;
   stopRealtimeSession();
   rtActive = false;
   btnRtStart.disabled = false;
   btnRtStop.disabled = true;
   rtStatusEl.textContent = "Disconnected";
   rtStatusEl.className = "rt-status";
+  rmsDisplay.textContent = "-- dB";
+  coherenceAvg.textContent = "--";
   updateStatus();
 }
 
@@ -444,10 +469,10 @@ function resetCoherenceLog() {
   coherenceLogStart = null;
 }
 
-function logCoherence(avgCoherence, erle) {
+function logCoherence(avgCoherence, erle, extras) {
   if (!coherenceLogStart) coherenceLogStart = performance.now();
   const time = ((performance.now() - coherenceLogStart) / 1000).toFixed(2);
-  coherenceLog.push({ time: parseFloat(time), avgCoherence, erle });
+  coherenceLog.push({ time: parseFloat(time), avgCoherence, erle, ...extras });
 }
 
 function exportCoherenceLog() {
@@ -455,9 +480,19 @@ function exportCoherenceLog() {
     alert("No coherence data to export");
     return;
   }
-  const header = "time_sec,avg_coherence,erle_dB\n";
+  const header = "time_sec,avg_coherence,erle_dB,mic_rms_dB,ref_rms_dB,coherence_low,coherence_mid,coherence_high,aec_enabled\n";
   const rows = coherenceLog.map(
-    (r) => `${r.time},${r.avgCoherence.toFixed(4)},${r.erle !== null ? r.erle.toFixed(2) : ""}`
+    (r) => [
+      r.time,
+      r.avgCoherence.toFixed(4),
+      r.erle !== null ? r.erle.toFixed(2) : "",
+      r.micRmsDb !== undefined ? r.micRmsDb.toFixed(2) : "",
+      r.refRmsDb !== undefined ? r.refRmsDb.toFixed(2) : "",
+      r.cohLow !== undefined ? r.cohLow.toFixed(4) : "",
+      r.cohMid !== undefined ? r.cohMid.toFixed(4) : "",
+      r.cohHigh !== undefined ? r.cohHigh.toFixed(4) : "",
+      r.aecEnabled !== undefined ? (r.aecEnabled ? "1" : "0") : "",
+    ].join(",")
   ).join("\n");
   const blob = new Blob([header + rows], { type: "text/csv" });
   const url = URL.createObjectURL(blob);
@@ -496,15 +531,39 @@ async function applyConstraintsLive() {
   }
 }
 
+// ---- Spectrogram color map (viridis-inspired) ----
+function spectrogramColor(value) {
+  const t = value / 255;
+  const r = Math.floor(Math.min(255, Math.max(0, (t < 0.5 ? t * 2 * 80 : 80 + (t - 0.5) * 2 * 175))));
+  const g = Math.floor(Math.min(255, Math.max(0, (t < 0.35 ? t * 2.86 * 20 : t < 0.7 ? 20 + (t - 0.35) * 2.86 * 200 : 220 + (t - 0.7) * 3.33 * 35))));
+  const b = Math.floor(Math.min(255, Math.max(0, (t < 0.5 ? 40 + t * 2 * 140 : 180 - (t - 0.5) * 2 * 150))));
+  return `rgb(${r},${g},${b})`;
+}
+
 // ---- Canvas Resize ----
 function resizeCanvases() {
-  for (const c of [waveformCanvas, spectrumCanvas, coherenceCanvas]) {
+  for (const c of [waveformCanvas, spectrumCanvas, coherenceCanvas, spectrogramCanvas, convergenceCanvas]) {
     const rect = c.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
     c.width = rect.width * dpr;
     c.height = rect.height * dpr;
   }
+  // Re-create spectrogram buffer when size changes
+  initSpectrogramBuffer();
 }
+
+function initSpectrogramBuffer() {
+  const w = spectrogramCanvas.width;
+  const h = spectrogramCanvas.height;
+  if (w === 0 || h === 0) return;
+  spectrogramBuffer = document.createElement("canvas");
+  spectrogramBuffer.width = w;
+  spectrogramBuffer.height = h;
+  spectrogramBufferCtx = spectrogramBuffer.getContext("2d");
+  spectrogramBufferCtx.fillStyle = "#1a1d27";
+  spectrogramBufferCtx.fillRect(0, 0, w, h);
+}
+
 window.addEventListener("resize", resizeCanvases);
 
 // ---- Visualization ----
@@ -522,6 +581,7 @@ function startVisualization() {
   // Float frequency data for coherence (dB values)
   const micFloatFreq = new Float32Array(bufferLength);
   const refFloatFreq = new Float32Array(bufferLength);
+  const refTimeData = new Uint8Array(bufferLength);
 
   function draw() {
     animationId = requestAnimationFrame(draw);
@@ -594,6 +654,42 @@ function startVisualization() {
         const xPos = (f / nyquist) * sW;
         const label = f >= 1000 ? f / 1000 + "k" : String(f);
         specCtx.fillText(label, xPos + 2, sH - 6 * dpr);
+      }
+    }
+
+    // ---- Spectrogram (waterfall) ----
+    const sgW = spectrogramCanvas.width;
+    const sgH = spectrogramCanvas.height;
+    if (sgW > 0 && sgH > 0 && spectrogramBufferCtx) {
+      // Shift existing image 1px to the left
+      const imgData = spectrogramBufferCtx.getImageData(1, 0, sgW - 1, sgH);
+      spectrogramBufferCtx.putImageData(imgData, 0, 0);
+
+      // Draw new column on the right edge
+      const colHeight = sgH;
+      for (let i = 0; i < bufferLength; i++) {
+        const binY = Math.floor((1 - i / bufferLength) * colHeight);
+        const binH = Math.max(1, Math.ceil(colHeight / bufferLength));
+        spectrogramBufferCtx.fillStyle = spectrogramColor(freqData[i]);
+        spectrogramBufferCtx.fillRect(sgW - 1, binY, 1, binH);
+      }
+
+      // Copy buffer to visible canvas
+      const sgCtx = spectrogramCanvas.getContext("2d");
+      sgCtx.drawImage(spectrogramBuffer, 0, 0);
+
+      // Frequency labels overlay
+      sgCtx.fillStyle = "rgba(100, 116, 139, 0.8)";
+      sgCtx.font = `${11 * dpr}px monospace`;
+      if (audioCtx) {
+        const nyquist = audioCtx.sampleRate / 2;
+        const freqs = [100, 500, 1000, 2000, 4000, 8000];
+        for (const f of freqs) {
+          if (f > nyquist) continue;
+          const yPos = sgH * (1 - f / nyquist);
+          const label = f >= 1000 ? f / 1000 + "k" : String(f);
+          sgCtx.fillText(label, 4, yPos - 2);
+        }
       }
     }
 
@@ -676,9 +772,42 @@ function startVisualization() {
       const avg = sum / coherence.length;
       coherenceAvg.textContent = avg.toFixed(3);
 
-      // Log coherence time-series (throttle to ~2Hz)
-      if (!this._lastLogTime || performance.now() - this._lastLogTime > 500) {
-        logCoherence(avg, erle);
+      // Band-specific coherence (low: 0-500Hz, mid: 500-2kHz, high: 2k-8kHz)
+      let cohLow = 0, cohMid = 0, cohHigh = 0;
+      let cntLow = 0, cntMid = 0, cntHigh = 0;
+      if (audioCtx) {
+        const nyquist = audioCtx.sampleRate / 2;
+        const binHz = nyquist / coherence.length;
+        for (let i = 0; i < coherence.length; i++) {
+          const freq = i * binHz;
+          if (freq <= 500) { cohLow += coherence[i]; cntLow++; }
+          else if (freq <= 2000) { cohMid += coherence[i]; cntMid++; }
+          else if (freq <= 8000) { cohHigh += coherence[i]; cntHigh++; }
+        }
+      }
+      cohLow = cntLow > 0 ? cohLow / cntLow : 0;
+      cohMid = cntMid > 0 ? cohMid / cntMid : 0;
+      cohHigh = cntHigh > 0 ? cohHigh / cntHigh : 0;
+
+      // Reference RMS (time-domain, same method as mic RMS)
+      refAnalyser.getByteTimeDomainData(refTimeData);
+      let refRms = 0;
+      for (let i = 0; i < refTimeData.length; i++) {
+        const v = (refTimeData[i] - 128) / 128;
+        refRms += v * v;
+      }
+      refRms = 20 * Math.log10(Math.max(Math.sqrt(refRms / refTimeData.length), 1e-10));
+
+      // Log coherence time-series (throttle to ~10Hz)
+      if (!this._lastLogTime || performance.now() - this._lastLogTime > 100) {
+        logCoherence(avg, erle, {
+          micRmsDb: dbLevel,
+          refRmsDb: refRms,
+          cohLow,
+          cohMid,
+          cohHigh,
+          aecEnabled: document.getElementById("echo-cancellation").checked,
+        });
         this._lastLogTime = performance.now();
       }
     } else {
@@ -690,6 +819,111 @@ function startVisualization() {
       cohCtx.textAlign = "start";
       coherenceAvg.textContent = "--";
       erleDisplay.textContent = "-- dB";
+    }
+
+    // ---- Convergence Curve ----
+    const cvW = convergenceCanvas.width;
+    const cvH = convergenceCanvas.height;
+    const cvCtx = convergenceCanvas.getContext("2d");
+    cvCtx.fillStyle = "#1a1d27";
+    cvCtx.fillRect(0, 0, cvW, cvH);
+
+    if (coherenceLog.length >= 2) {
+      const VISIBLE_SECONDS = 30;
+      const log = coherenceLog;
+      const latestTime = log[log.length - 1].time;
+      const windowStart = Math.max(0, latestTime - VISIBLE_SECONDS);
+
+      // Grid lines
+      cvCtx.strokeStyle = "#2a2d3a";
+      cvCtx.lineWidth = 1;
+      for (let i = 1; i < 4; i++) {
+        const gy = (cvH * i) / 4;
+        cvCtx.beginPath();
+        cvCtx.moveTo(0, gy);
+        cvCtx.lineTo(cvW, gy);
+        cvCtx.stroke();
+      }
+
+      // Time axis labels
+      cvCtx.fillStyle = "#475569";
+      cvCtx.font = `${10 * dpr}px monospace`;
+      const timeStep = VISIBLE_SECONDS <= 10 ? 2 : 5;
+      for (let t = Math.ceil(windowStart / timeStep) * timeStep; t <= latestTime; t += timeStep) {
+        const tx = ((t - windowStart) / VISIBLE_SECONDS) * cvW;
+        cvCtx.fillText(`${t}s`, tx + 2, cvH - 4);
+      }
+
+      // Filter visible data
+      const visible = log.filter((d) => d.time >= windowStart);
+      if (visible.length >= 2) {
+        // Coherence curve (amber, 0-1, mapped to full height)
+        cvCtx.strokeStyle = "#f59e0b";
+        cvCtx.lineWidth = 2 * dpr;
+        cvCtx.beginPath();
+        for (let i = 0; i < visible.length; i++) {
+          const px = ((visible[i].time - windowStart) / VISIBLE_SECONDS) * cvW;
+          const py = cvH * (1 - visible[i].avgCoherence);
+          if (i === 0) cvCtx.moveTo(px, py);
+          else cvCtx.lineTo(px, py);
+        }
+        cvCtx.stroke();
+
+        // ERLE curve (green, 0-40dB range mapped to full height)
+        const ERLE_MAX = 40;
+        const hasErle = visible.some((d) => d.erle !== null);
+        if (hasErle) {
+          cvCtx.strokeStyle = "#10b981";
+          cvCtx.lineWidth = 2 * dpr;
+          cvCtx.beginPath();
+          let started = false;
+          for (let i = 0; i < visible.length; i++) {
+            if (visible[i].erle === null) continue;
+            const px = ((visible[i].time - windowStart) / VISIBLE_SECONDS) * cvW;
+            const erleNorm = Math.max(0, Math.min(1, visible[i].erle / ERLE_MAX));
+            const py = cvH * (1 - erleNorm);
+            if (!started) { cvCtx.moveTo(px, py); started = true; }
+            else cvCtx.lineTo(px, py);
+          }
+          cvCtx.stroke();
+        }
+
+        // Legend
+        cvCtx.font = `${11 * dpr}px monospace`;
+        const legendY = 14 * dpr;
+        cvCtx.fillStyle = "#f59e0b";
+        cvCtx.fillText("■", 6, legendY);
+        cvCtx.fillStyle = "#94a3b8";
+        cvCtx.fillText("Coherence (0–1)", 6 + 14 * dpr, legendY);
+
+        cvCtx.fillStyle = "#10b981";
+        cvCtx.fillText("■", 6 + 140 * dpr, legendY);
+        cvCtx.fillStyle = "#94a3b8";
+        cvCtx.fillText("ERLE (0–40dB)", 6 + 154 * dpr, legendY);
+
+        // Y-axis labels
+        cvCtx.fillStyle = "#475569";
+        cvCtx.font = `${10 * dpr}px monospace`;
+        // Coherence scale (right side)
+        cvCtx.textAlign = "right";
+        cvCtx.fillStyle = "#f59e0b";
+        cvCtx.fillText("1.0", cvW - 4, 12 * dpr);
+        cvCtx.fillText("0.5", cvW - 4, cvH / 2 + 4);
+        cvCtx.fillText("0", cvW - 4, cvH - 14 * dpr);
+        // ERLE scale (left side)
+        cvCtx.textAlign = "left";
+        cvCtx.fillStyle = "#10b981";
+        cvCtx.fillText("40dB", 4, 26 * dpr);
+        cvCtx.fillText("20dB", 4, cvH / 2 + 4);
+        cvCtx.fillText("0dB", 4, cvH - 14 * dpr);
+        cvCtx.textAlign = "start";
+      }
+    } else {
+      cvCtx.fillStyle = "#475569";
+      cvCtx.font = `${12 * dpr}px sans-serif`;
+      cvCtx.textAlign = "center";
+      cvCtx.fillText("Play a test source + start mic to see convergence", cvW / 2, cvH / 2);
+      cvCtx.textAlign = "start";
     }
   }
 
